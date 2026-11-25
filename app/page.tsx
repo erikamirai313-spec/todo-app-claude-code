@@ -2,7 +2,7 @@
 
 import { useRef, useState, useSyncExternalStore } from "react";
 
-type Task = { id: string; text: string; done: boolean };
+type Task = { id: string; text: string; done: boolean; important?: boolean };
 
 const KEY = "todo-app:tasks";
 const listeners = new Set<() => void>();
@@ -47,6 +47,7 @@ export default function Home() {
   const tasks = useSyncExternalStore<Task[] | null>(subscribe, read, () => null);
   const [text, setText] = useState("");
   const [error, setError] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -69,15 +70,39 @@ export default function Home() {
   }
   function toggle(id: string) {
     if (!tasks) return;
+    setConfirming(false);
     const target = tasks.find((t) => t.id === id);
     write(tasks.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
     notify(target?.done ? "未完了に戻しました" : "完了しました");
+  }
+  function toggleImportant(id: string) {
+    if (!tasks) return;
+    const target = tasks.find((t) => t.id === id);
+    write(tasks.map((t) => (t.id === id ? { ...t, important: !t.important } : t)));
+    notify(target?.important ? "重要を解除しました" : "重要にしました");
+  }
+  function clearDone() {
+    if (!tasks) return;
+    const n = tasks.filter((t) => t.done).length;
+    write(tasks.filter((t) => !t.done));
+    setConfirming(false);
+    notify(`${n}件削除しました`);
   }
   function remove(id: string) {
     if (!tasks) return;
     write(tasks.filter((t) => t.id !== id));
     notify("削除しました");
   }
+
+  // important tasks first; otherwise keep the stored order (stable sort)
+  const sorted = tasks
+    ? [...tasks].sort((a, b) => Number(!!b.important) - Number(!!a.important))
+    : null;
+
+  const total = tasks?.length ?? 0;
+  const doneCount = tasks?.filter((t) => t.done).length ?? 0;
+  const percent = total ? Math.round((doneCount / total) * 100) : 0;
+  const allDone = total > 0 && doneCount === total;
 
   return (
     <main className="mx-auto w-full max-w-xl px-5 py-10 sm:py-16">
@@ -118,16 +143,47 @@ export default function Home() {
         )}
       </form>
 
+      {total > 0 && (
+        <section aria-label="進み具合" className="mb-6">
+          <p className="mb-2 text-base font-semibold text-gray-900">
+            {allDone ? "すべて完了しました 🎉" : `${total}件中${doneCount}件完了（${percent}%）`}
+          </p>
+          {allDone && (
+            <p className="mb-2 text-base text-gray-700">
+              {total}件中{doneCount}件完了（{percent}%）
+            </p>
+          )}
+          <div
+            role="progressbar"
+            aria-label="完了の進み具合"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percent}
+            aria-valuetext={`${total}件中${doneCount}件完了（${percent}%）`}
+            className="h-4 w-full overflow-hidden rounded-full border border-gray-400 bg-gray-100"
+          >
+            <div
+              className={`h-full transition-[width] duration-500 ease-out motion-reduce:transition-none ${
+                allDone ? "bg-green-700" : "bg-blue-600"
+              }`}
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+        </section>
+      )}
+
       {tasks === null ? null : tasks.length === 0 ? (
         <p className="rounded-xl border border-dashed border-gray-300 py-12 text-center text-base text-gray-600">
           タスクはまだありません
         </p>
       ) : (
         <ul className="space-y-3">
-          {tasks.map((t) => (
+          {sorted?.map((t) => (
             <li
               key={t.id}
-              className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white py-2 pl-2 pr-3 shadow-sm"
+              className={`flex items-center gap-2 rounded-xl border border-l-4 bg-white py-2 pl-2 pr-3 shadow-sm ${
+                t.important ? "border-amber-500" : "border-gray-200 border-l-transparent"
+              }`}
             >
               <label className="flex min-h-11 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg hover:bg-gray-50 active:bg-gray-100">
                 <span className="flex h-11 w-11 shrink-0 items-center justify-center">
@@ -147,6 +203,18 @@ export default function Home() {
                   {t.text}
                 </span>
               </label>
+              <button
+                onClick={() => toggleImportant(t.id)}
+                aria-pressed={!!t.important}
+                aria-label={`「${t.text}」を重要にする`}
+                className={`min-h-11 min-w-11 shrink-0 cursor-pointer rounded-lg border px-3 text-base font-semibold transition active:scale-95 ${
+                  t.important
+                    ? "border-amber-600 bg-amber-100 text-amber-900 hover:bg-amber-200"
+                    : "border-gray-400 text-gray-700 hover:bg-gray-50"
+                }`}
+              >
+                {t.important ? "★ 重要" : <span aria-hidden="true" className="text-xl">☆</span>}
+              </button>
               <button
                 onClick={() => remove(t.id)}
                 aria-label={`「${t.text}」を削除`}
@@ -171,6 +239,67 @@ export default function Home() {
             </li>
           ))}
         </ul>
+      )}
+      {doneCount > 0 && (
+        <div className="mt-6">
+          {confirming ? (
+            <div
+              role="alertdialog"
+              aria-label="完了済みの削除の確認"
+              className="rounded-xl border-2 border-red-600 bg-red-50 p-4"
+            >
+              <p className="mb-3 text-base font-semibold text-gray-900">
+                完了済みの{doneCount}件を削除しますか？
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={clearDone}
+                  className="flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg bg-red-700 px-4 text-base font-semibold text-white transition hover:bg-red-800 active:scale-95"
+                >
+                  <svg
+                    aria-hidden="true"
+                    viewBox="0 0 24 24"
+                    className="h-5 w-5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 10v6M14 10v6" />
+                  </svg>
+                  削除する
+                </button>
+                <button
+                  autoFocus
+                  onClick={() => setConfirming(false)}
+                  className="min-h-11 flex-1 cursor-pointer rounded-lg border border-gray-400 bg-white px-4 text-base font-semibold text-gray-900 transition hover:bg-gray-50 active:scale-95"
+                >
+                  やめる
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirming(true)}
+              className="flex min-h-11 w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-red-300 px-4 text-base font-medium text-red-700 transition hover:bg-red-50 active:scale-95 active:bg-red-100"
+            >
+              <svg
+                    aria-hidden="true"
+                    viewBox="0 0 24 24"
+                    className="h-5 w-5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 10v6M14 10v6" />
+                  </svg>
+              完了済みを削除（{doneCount}件）
+            </button>
+          )}
+        </div>
       )}
       <div
         role="status"
